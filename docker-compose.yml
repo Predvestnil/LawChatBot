@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # База данных PostgreSQL
+  postgres:
+    image: postgres:15
+    container_name: telegram_bot_db
+    restart: always
+    environment:
+      POSTGRES_DB: telegram_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway - входная точка для Telegram API
+  api-gateway:
+    build: 
+      context: .
+      dockerfile: ./dockerfiles/api-gateway.dockerfile
+    container_name: telegram_bot_api_gateway
+    restart: always
+    depends_on:
+      - auth-service
+      - dialogue-service
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - DIALOGUE_SERVICE_URL=http://dialogue-service:8002
+      - ML_SERVICE_URL=http://ml-service:8003
+    ports:
+      - "8000:8000"
+
+  # Auth Service - обработка авторизации пользователей
+  auth-service:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/auth-service.dockerfile
+    container_name: telegram_bot_auth_service
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/telegram_bot
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    ports:
+      - "8001:8001"
+
+  # Dialogue Service - управление диалогами и контекстом
+  dialogue-service:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/dialogue-service.dockerfile
+    container_name: telegram_bot_dialogue_service
+    restart: always
+    depends_on:
+      - postgres
+      - ml-service
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/telegram_bot
+      - ML_SERVICE_URL=http://ml-service:8003
+      - AUTH_SERVICE_URL=http://auth-service:8001
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    ports:
+      - "8002:8002"
+
+  # ML Service - взаимодействие с ИИ-моделью
+  ml-service:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/ml-service.dockerfile
+    container_name: telegram_bot_ml_service
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - MODEL_NAME=${MODEL_NAME:-meta-llama/Llama-2-7b-chat-hf}
+    ports:
+      - "8003:8003"
+
+  # Database Service - управление базой данных
+  db-service:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/db-service.dockerfile
+    container_name: telegram_bot_db_service
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/telegram_bot
+    ports:
+      - "8004:8004"
+    volumes:
+      - backups:/backups
+
+volumes:
+  postgres_data:
+  backups:
